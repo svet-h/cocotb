@@ -4,6 +4,7 @@
 
 #include <libgen.h>  // basename
 #include <stdio.h>   // stderr, fprintf
+#include <stdlib.h>  // _exit
 
 #include <memory>  // std::unique_ptr
 #include <string>  // std::string
@@ -11,6 +12,11 @@
 #include "Vtop.h"
 #include "verilated.h"
 #include "verilated_vpi.h"
+
+// Declare embed_sim_cleanup from cocotb's embed library.
+// This function properly finalizes the Python interpreter and cocotb
+// before C++ static/TLS destructors run.
+extern "C" void embed_sim_cleanup(void);
 
 #ifndef VM_TRACE_FST
 // emulate new verilator behavior for legacy versions
@@ -205,5 +211,22 @@ int main(int argc, char **argv) {
 
     wrap_up();
 
-    return 0;
+    // Explicitly destroy the simulation object to run Verilator's cleanup
+    top.reset();
+
+    // Flush any pending output
+    fflush(stdout);
+    fflush(stderr);
+
+    // Explicitly cleanup Python/cocotb before C++ TLS destructors run.
+    // This fixes a crash in greenlet's TLS destructor that occurs when
+    // the Python interpreter is finalized after C++ static destructors
+    // have already run, causing dynamic_cast to fail.
+    // See: https://github.com/python-greenlet/greenlet/issues/330
+    embed_sim_cleanup();
+
+    // Use _exit() to terminate immediately without running TLS destructors.
+    // This is necessary because greenlet's TLS destructor can crash even after
+    // embed_sim_cleanup() has finalized Python, due to RTTI info being invalidated.
+    _exit(0);
 }
